@@ -2,6 +2,7 @@ package connection
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +14,25 @@ const (
 	testNoTTL      = 0
 	testAccountTag = "testAccountTag"
 )
+
+// clearProxyEnv unsets proxy env vars for the duration of the test so protocol
+// selector tests exercise the no-proxy (direct) code path.
+func clearProxyEnv(t *testing.T) {
+	t.Helper()
+	keys := []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"}
+	saved := make(map[string]string)
+	for _, k := range keys {
+		saved[k] = os.Getenv(k)
+		os.Unsetenv(k)
+	}
+	t.Cleanup(func() {
+		for _, k := range keys {
+			if saved[k] != "" {
+				os.Setenv(k, saved[k])
+			}
+		}
+	})
+}
 
 func mockFetcher(getError bool, protocolPercent ...edgediscovery.ProtocolPercent) edgediscovery.PercentageFetcher {
 	return func() (edgediscovery.ProtocolPercents, error) {
@@ -35,6 +55,8 @@ func (dmf *dynamicMockFetcher) fetch() edgediscovery.PercentageFetcher {
 }
 
 func TestNewProtocolSelector(t *testing.T) {
+	clearProxyEnv(t)
+
 	tests := []struct {
 		name                string
 		protocol            string
@@ -104,6 +126,8 @@ func TestNewProtocolSelector(t *testing.T) {
 }
 
 func TestAutoProtocolSelectorRefresh(t *testing.T) {
+	clearProxyEnv(t)
+
 	fetcher := dynamicMockFetcher{}
 	selector, err := NewProtocolSelector(AutoSelectFlag, testAccountTag, false, false, fetcher.fetch(), testNoTTL, &log)
 	assert.NoError(t, err)
@@ -133,6 +157,8 @@ func TestAutoProtocolSelectorRefresh(t *testing.T) {
 }
 
 func TestHTTP2ProtocolSelectorRefresh(t *testing.T) {
+	clearProxyEnv(t)
+
 	fetcher := dynamicMockFetcher{}
 	// Since the user chooses http2 on purpose, we always stick to it.
 	selector, err := NewProtocolSelector(HTTP2.String(), testAccountTag, false, false, fetcher.fetch(), testNoTTL, &log)
@@ -163,6 +189,8 @@ func TestHTTP2ProtocolSelectorRefresh(t *testing.T) {
 }
 
 func TestAutoProtocolSelectorNoRefreshWithToken(t *testing.T) {
+	clearProxyEnv(t)
+
 	fetcher := dynamicMockFetcher{}
 	selector, err := NewProtocolSelector(AutoSelectFlag, testAccountTag, true, false, fetcher.fetch(), testNoTTL, &log)
 	assert.NoError(t, err)
@@ -170,4 +198,55 @@ func TestAutoProtocolSelectorNoRefreshWithToken(t *testing.T) {
 
 	fetcher.protocolPercents = edgediscovery.ProtocolPercents{edgediscovery.ProtocolPercent{Protocol: "http2", Percentage: 100}}
 	assert.Equal(t, QUIC, selector.Current())
+}
+
+// --- Proxy-specific tests ---
+
+func TestProtocolSelectorForcesHTTP2WithProxy(t *testing.T) {
+	clearProxyEnv(t)
+
+	// Set a proxy env var
+	os.Setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
+	defer os.Unsetenv("HTTPS_PROXY")
+
+	fetcher := dynamicMockFetcher{}
+
+	// Even with auto (which would normally pick QUIC), proxy forces HTTP2
+	selector, err := NewProtocolSelector(AutoSelectFlag, testAccountTag, true, false, fetcher.fetch(), testNoTTL, &log)
+	assert.NoError(t, err)
+	assert.Equal(t, HTTP2, selector.Current())
+
+	// No fallback from HTTP2 in proxy mode
+	_, ok := selector.Fallback()
+	assert.False(t, ok)
+}
+
+func TestProtocolSelectorForcesHTTP2OverridesQuicFlag(t *testing.T) {
+	clearProxyEnv(t)
+
+	os.Setenv("HTTP_PROXY", "http://proxy.example.com:8080")
+	defer os.Unsetenv("HTTP_PROXY")
+
+	fetcher := dynamicMockFetcher{}
+
+	// Even if user explicitly requests QUIC, proxy overrides to HTTP2
+	selector, err := NewProtocolSelector(QUIC.String(), testAccountTag, false, false, fetcher.fetch(), testNoTTL, &log)
+	assert.NoError(t, err)
+	assert.Equal(t, HTTP2, selector.Current())
+}
+
+func TestProtocolSelectorNormalWithoutProxy(t *testing.T) {
+	clearProxyEnv(t)
+
+	fetcher := dynamicMockFetcher{}
+
+	// Without proxy, auto with token should pick QUIC
+	selector, err := NewProtocolSelector(AutoSelectFlag, testAccountTag, true, false, fetcher.fetch(), testNoTTL, &log)
+	assert.NoError(t, err)
+	assert.Equal(t, QUIC, selector.Current())
+
+	// QUIC falls back to HTTP2
+	fallback, ok := selector.Fallback()
+	assert.True(t, ok)
+	assert.Equal(t, HTTP2, fallback)
 }

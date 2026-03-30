@@ -77,19 +77,30 @@ func TestProxyAwareDialer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			origHTTP := os.Getenv("HTTP_PROXY")
-			origHTTPS := os.Getenv("HTTPS_PROXY")
-			origSOCKS := os.Getenv("ALL_PROXY")
+			proxyKeys := []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"}
+			saved := make(map[string]string)
+			for _, k := range proxyKeys {
+				saved[k] = os.Getenv(k)
+				os.Unsetenv(k)
+			}
 
 			defer func() {
-				os.Setenv("HTTP_PROXY", origHTTP)
-				os.Setenv("HTTPS_PROXY", origHTTPS)
-				os.Setenv("ALL_PROXY", origSOCKS)
+				for _, k := range proxyKeys {
+					if saved[k] != "" {
+						os.Setenv(k, saved[k])
+					}
+				}
 			}()
 
-			os.Setenv("HTTP_PROXY", tt.httpProxy)
-			os.Setenv("HTTPS_PROXY", tt.httpsProxy)
-			os.Setenv("ALL_PROXY", tt.socksProxy)
+			if tt.httpProxy != "" {
+				os.Setenv("HTTP_PROXY", tt.httpProxy)
+			}
+			if tt.httpsProxy != "" {
+				os.Setenv("HTTPS_PROXY", tt.httpsProxy)
+			}
+			if tt.socksProxy != "" {
+				os.Setenv("ALL_PROXY", tt.socksProxy)
+			}
 
 			dialer := newProxyAwareDialer(30*time.Second, 30*time.Second, TestLogger)
 			assert.NotNil(t, dialer)

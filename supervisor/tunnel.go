@@ -466,7 +466,7 @@ func (e *EdgeTunnelServer) serveConnection(
 			connIndex)
 
 	case connection.HTTP2:
-		edgeConn, err := edgediscovery.DialEdge(ctx, dialTimeout, e.config.EdgeTLSConfigs[protocol], addr.TCP, e.edgeBindAddr)
+		edgeConn, err := edgediscovery.DialEdge(ctx, dialTimeout, e.config.EdgeTLSConfigs[protocol], addr, e.edgeBindAddr)
 		if err != nil {
 			connLog.ConnAwareLogger().Err(err).Msg("Unable to establish connection with Cloudflare edge")
 			return err, true

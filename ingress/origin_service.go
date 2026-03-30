@@ -1,7 +1,6 @@
 package ingress
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 	"github.com/rs/zerolog"
 	"golang.org/x/net/proxy"
 
+	"github.com/cloudflare/cloudflared/cfproxy"
 	"github.com/cloudflare/cloudflared/hello"
 	"github.com/cloudflare/cloudflared/ipaccess"
 	"github.com/cloudflare/cloudflared/management"
@@ -210,39 +210,10 @@ func (p *proxyAwareDialer) dialSOCKS(ctx context.Context, proxyURL *url.URL, net
 }
 
 func (p *proxyAwareDialer) dialHTTPConnect(ctx context.Context, proxyURL *url.URL, addr string) (net.Conn, error) {
-	proxyAddr := proxyURL.Host
-	if proxyURL.Port() == "" {
-		if proxyURL.Scheme == "https" {
-			proxyAddr = net.JoinHostPort(proxyURL.Hostname(), "443")
-		} else {
-			proxyAddr = net.JoinHostPort(proxyURL.Hostname(), "80")
-		}
-	}
-
-	conn, err := p.baseDialer.DialContext(ctx, "tcp", proxyAddr)
+	conn, err := cfproxy.DialThroughProxy(ctx, proxyURL, addr)
 	if err != nil {
-		return nil, fmt.Errorf("proxy connection failed: %w", err)
+		return nil, err
 	}
-
-	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, addr)
-	if _, err := conn.Write([]byte(connectReq)); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("CONNECT request failed: %w", err)
-	}
-
-	br := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(br, &http.Request{Method: "CONNECT"})
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("CONNECT response failed: %w", err)
-	}
-	resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		conn.Close()
-		return nil, fmt.Errorf("proxy CONNECT failed: %s", resp.Status)
-	}
-
 	if p.logger != nil {
 		p.logger.Debug().Str("addr", addr).Msg("proxy: HTTP CONNECT successful")
 	}

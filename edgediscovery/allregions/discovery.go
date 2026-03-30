@@ -10,6 +10,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 
+	"github.com/cloudflare/cloudflared/cfproxy"
 	"github.com/cloudflare/cloudflared/management"
 )
 
@@ -26,6 +27,12 @@ const (
 	dotTimeout    = 15 * time.Second
 
 	logFieldAddress = "address"
+
+	// Known Cloudflare edge hostnames used when DNS discovery is not possible (e.g. behind HTTP proxy).
+	// These are the targets that SRV records for _v2-origintunneld._tcp.argotunnel.com resolve to.
+	proxyEdgeHost1 = "region1.v2.argotunnel.com"
+	proxyEdgeHost2 = "region2.v2.argotunnel.com"
+	proxyEdgePort  = 7844
 )
 
 // Redeclare network functions so they can be overridden in tests.
@@ -81,6 +88,9 @@ type EdgeAddr struct {
 	TCP       *net.TCPAddr
 	UDP       *net.UDPAddr
 	IPVersion EdgeIPVersion
+	// Hostname is set when running behind an HTTP proxy. The proxy uses this
+	// hostname for DNS resolution and HTTP CONNECT. Empty in direct mode.
+	Hostname string
 }
 
 // If the call to net.LookupSRV fails, try to fall back to DoT from Cloudflare directly.
@@ -108,8 +118,36 @@ var friendlyDNSErrorLines = []string{
 	`     https://developers.cloudflare.com/1.1.1.1/setting-up-1.1.1.1/`,
 }
 
+// proxyEdgeAddrs returns edge addresses for use behind an HTTP proxy.
+// DNS resolution is skipped; the proxy will resolve hostnames via HTTP CONNECT.
+func proxyEdgeAddrs(log *zerolog.Logger) [][]*EdgeAddr {
+	logger := log.With().Int(management.EventTypeKey, int(management.Cloudflared)).Logger()
+	logger.Info().Msg("edge discovery: HTTP proxy detected, using known edge hostnames instead of DNS")
+
+	dummyIP := net.IPv4(0, 0, 0, 0)
+	makeAddr := func(hostname string) *EdgeAddr {
+		return &EdgeAddr{
+			TCP:       &net.TCPAddr{IP: dummyIP, Port: proxyEdgePort},
+			UDP:       &net.UDPAddr{IP: dummyIP, Port: proxyEdgePort},
+			IPVersion: V4,
+			Hostname:  fmt.Sprintf("%s:%d", hostname, proxyEdgePort),
+		}
+	}
+
+	return [][]*EdgeAddr{
+		{makeAddr(proxyEdgeHost1)},
+		{makeAddr(proxyEdgeHost2)},
+	}
+}
+
 // EdgeDiscovery implements HA service discovery lookup.
 func edgeDiscovery(log *zerolog.Logger, srvService string) ([][]*EdgeAddr, error) {
+	// When behind an HTTP proxy, skip DNS discovery and use known edge hostnames.
+	// The proxy handles DNS resolution via HTTP CONNECT.
+	if cfproxy.HasHTTPProxy() {
+		return proxyEdgeAddrs(log), nil
+	}
+
 	logger := log.With().Int(management.EventTypeKey, int(management.Cloudflared)).Logger()
 	logger.Debug().
 		Int(management.EventTypeKey, int(management.Cloudflared)).

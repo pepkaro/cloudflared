@@ -8,6 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/cloudflare/cloudflared/cfproxy"
 	"github.com/cloudflare/cloudflared/edgediscovery"
 )
 
@@ -209,6 +210,12 @@ func NewProtocolSelector(
 	resolveTTL time.Duration,
 	log *zerolog.Logger,
 ) (ProtocolSelector, error) {
+	// When an HTTP proxy is detected, force HTTP/2 because QUIC (UDP) cannot traverse HTTP CONNECT proxies.
+	if cfproxy.HasHTTPProxy() {
+		log.Info().Msg("HTTP proxy detected, forcing HTTP/2 protocol (QUIC/UDP cannot traverse HTTP proxies)")
+		return &staticProtocolSelector{current: HTTP2}, nil
+	}
+
 	// With --post-quantum, we force quic
 	if needPQ {
 		return &staticProtocolSelector{
