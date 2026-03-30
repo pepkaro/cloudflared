@@ -30,14 +30,12 @@ func DialEdge(
 	var edgeConn net.Conn
 	var err error
 
-	isProxy := false
 	if proxyURL := cfproxy.GetHTTPProxyURL(); proxyURL != nil && edgeAddr.Hostname != "" {
 		// Proxy mode: tunnel through HTTP CONNECT. The proxy resolves the hostname.
 		edgeConn, err = cfproxy.DialThroughProxy(dialCtx, proxyURL, edgeAddr.Hostname)
 		if err != nil {
 			return nil, newDialError(err, "proxy CONNECT to edge error")
 		}
-		isProxy = true
 	} else {
 		// Direct mode: original behavior
 		dialer := net.Dialer{}
@@ -59,12 +57,6 @@ func DialEdge(
 	// clear the deadline on the conn; http2 has its own timeouts
 	tlsEdgeConn.SetDeadline(time.Time{})
 
-	if isProxy {
-		// The Cloudflare edge expects the HTTP/2 client connection preface when
-		// connecting through a proxy. WrapH2ForProxy handles this transparently
-		// so that http2.Server.ServeConn still works correctly.
-		return cfproxy.WrapH2ForProxy(tlsEdgeConn), nil
-	}
 	return tlsEdgeConn, nil
 }
 

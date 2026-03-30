@@ -105,6 +105,13 @@ var h2ClientPreface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 // the HTTP/2 client connection preface when the connection arrives through a
 // proxy. Without it, the edge returns "HTTP/1.1 400 Bad Request".
 //
+// NOTE: This wrapper is currently unused because the Cloudflare edge's HTTP/2
+// gateway acts as H2 server through proxied connections. When cloudflared sends
+// the client preface, the edge enters server mode and waits for requests, but
+// cloudflared's ServeConn also waits for requests, causing a deadlock.
+// Resolving this requires Cloudflare edge infrastructure changes to support
+// the tunnel protocol's reversed H2 roles through proxied connections.
+//
 // This wrapper:
 //   - On the first Write, prepends the H2 client preface (so the edge sees a
 //     valid client).

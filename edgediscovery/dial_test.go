@@ -240,28 +240,19 @@ func TestDialEdge_Proxy(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Close()
 
-	// In proxy mode, returned conn should NOT be a plain *tls.Conn (it's wrapped)
+	// In proxy mode, the connection is tunneled through the proxy but returns
+	// a standard *tls.Conn (same as direct mode).
 	_, isTLS := conn.(*tls.Conn)
-	assert.False(t, isTLS, "proxy mode should return wrapped conn, not *tls.Conn")
+	assert.True(t, isTLS, "proxy mode should return *tls.Conn")
 
-	// The wrapper prepends H2 preface on write. Write through the wrapped conn
-	// and verify the echo server returns the data (preface + payload echoed back).
-	_, err = conn.Write([]byte("test"))
+	// Verify data flows through the proxy tunnel
+	_, err = conn.Write([]byte("ping"))
 	require.NoError(t, err)
 
-	// The Read side returns injected preface first, then real (echoed) data.
-	// Drain the injected preface (24 bytes).
-	preface := make([]byte, 24)
-	_, err = io.ReadFull(conn, preface)
+	buf := make([]byte, 4)
+	_, err = io.ReadFull(conn, buf)
 	require.NoError(t, err)
-	assert.Equal(t, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", string(preface))
-
-	// Now read echoed data: server received preface(24) + "test"(4) = 28 bytes
-	// and echoes all of it back.
-	echoed := make([]byte, 28)
-	_, err = io.ReadFull(conn, echoed)
-	require.NoError(t, err)
-	assert.Equal(t, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"+"test", string(echoed))
+	assert.Equal(t, "ping", string(buf))
 }
 
 func TestDialEdge_ProxyNoHostname(t *testing.T) {
