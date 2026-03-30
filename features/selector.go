@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/cloudflare/cloudflared/cfproxy"
 )
 
 const (
@@ -70,8 +72,12 @@ func newFeatureSelector(ctx context.Context, accountTag string, logger *zerolog.
 		cliFeatures:    dedupAndRemoveFeatures(cliFeatures),
 	}
 
-	// Load the remote features
-	if err := selector.refresh(ctx); err != nil {
+	// When behind an HTTP proxy, skip the DNS lookup for features since the
+	// proxy environment typically cannot resolve cfd-features.argotunnel.com
+	// and the 10-second timeout would unnecessarily delay startup.
+	if cfproxy.HasHTTPProxy() {
+		logger.Info().Msg("HTTP proxy detected, skipping remote feature lookup")
+	} else if err := selector.refresh(ctx); err != nil {
 		logger.Err(err).Msg("Failed to fetch features, default to disable")
 	}
 

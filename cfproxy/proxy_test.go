@@ -212,6 +212,126 @@ func TestDialThroughProxyUnreachable(t *testing.T) {
 	assert.Contains(t, err.Error(), "proxy connection")
 }
 
+func TestWrapH2ForProxy_WritePrependsPreface(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	wrapped := WrapH2ForProxy(client)
+
+	// Read everything the server side receives
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 256)
+		var all []byte
+		for {
+			n, err := server.Read(buf)
+			if n > 0 {
+				all = append(all, buf[:n]...)
+			}
+			// Stop after we've got preface + both payloads
+			if len(all) >= len(h2ClientPreface)+10 || err != nil {
+				break
+			}
+		}
+		done <- all
+	}()
+
+	// First write should prepend the H2 preface
+	_, err := wrapped.Write([]byte("hello"))
+	require.NoError(t, err)
+
+	// Second write should NOT prepend the preface again
+	_, err = wrapped.Write([]byte("world"))
+	require.NoError(t, err)
+
+	received := <-done
+	expected := append([]byte{}, h2ClientPreface...)
+	expected = append(expected, "helloworld"...)
+	assert.Equal(t, expected, received)
+}
+
+func TestWrapH2ForProxy_ReadReturnsPreface(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	wrapped := WrapH2ForProxy(client)
+
+	// Write real data from the server side
+	go func() {
+		server.Write([]byte("real data from edge"))
+	}()
+
+	// First reads should return the injected H2 client preface
+	prefaceBuf := make([]byte, len(h2ClientPreface))
+	n, err := io.ReadFull(wrapped, prefaceBuf)
+	require.NoError(t, err)
+	assert.Equal(t, len(h2ClientPreface), n)
+	assert.Equal(t, h2ClientPreface, prefaceBuf)
+
+	// Next read should return the real data
+	dataBuf := make([]byte, 64)
+	n, err = wrapped.Read(dataBuf)
+	require.NoError(t, err)
+	assert.Equal(t, "real data from edge", string(dataBuf[:n]))
+}
+
+func TestWrapH2ForProxy_ReadPrefaceSmallBuffer(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	wrapped := WrapH2ForProxy(client)
+
+	// Write real data from the server side so reads don't block forever
+	go func() {
+		server.Write([]byte("X"))
+	}()
+
+	// Read the preface one byte at a time
+	var preface []byte
+	for i := 0; i < len(h2ClientPreface); i++ {
+		buf := make([]byte, 1)
+		n, err := wrapped.Read(buf)
+		require.NoError(t, err)
+		assert.Equal(t, 1, n)
+		preface = append(preface, buf[0])
+	}
+	assert.Equal(t, h2ClientPreface, preface)
+
+	// Next read returns real data
+	buf := make([]byte, 1)
+	n, err := wrapped.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, "X", string(buf[:n]))
+}
+
+func TestWrapH2ForProxy_ReadPrefaceLargeBuffer(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	wrapped := WrapH2ForProxy(client)
+
+	go func() {
+		server.Write([]byte("after preface"))
+	}()
+
+	// Read with a buffer larger than the preface
+	buf := make([]byte, 256)
+	n, err := wrapped.Read(buf)
+	require.NoError(t, err)
+	// Should return only the preface, not mixed with underlying data
+	assert.Equal(t, len(h2ClientPreface), n)
+	assert.Equal(t, h2ClientPreface, buf[:n])
+
+	// Second read gets real data
+	n, err = wrapped.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, "after preface", string(buf[:n]))
+}
+
 func bufioReader(r io.Reader) *bufio.Reader {
 	return bufio.NewReader(r)
 }
